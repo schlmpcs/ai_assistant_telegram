@@ -279,22 +279,45 @@ def parse_export(path: str, cli_owner_id: Optional[int]) -> tuple[list[dict], in
     return samples, owner_id, chats_scanned, False
 
 
-async def run_ingest(path: str, owner_id: Optional[int] = None,
+async def run_ingest(path, owner_id: Optional[int] = None,
                      owner_name: str = "me", *, max_samples: int = 4000,
                      use_llm: bool = True) -> dict:
     """Async entry point usable from the bot (/learn) and the CLI.
 
-    Parses the export, stores samples, builds + stores the style profile, and
-    returns a summary dict.
+    ``path`` is a single export path or a list of them — samples from every file
+    are accumulated (the owner's style across all of them) before the store is
+    cleared once and the profile rebuilt. Parses, stores samples, builds + stores
+    the style profile, and returns a summary dict.
     """
     from config import settings
 
-    samples, resolved_owner_id, chats_scanned, salvaged = parse_export(path, owner_id)
+    paths = [path] if isinstance(path, str) else list(path)
 
-    # Cap: keep the most recent if over the limit.
+    samples: list[dict] = []
+    chats_scanned = 0
+    salvaged = False
+    resolved_owner_id: Optional[int] = owner_id
+    files_read = 0
+    for p in paths:
+        # Once we know the owner id (from the first file's personal_information),
+        # reuse it for the rest — later single-chat exports have no such block.
+        s, oid, scanned, sal = parse_export(p, resolved_owner_id)
+        if resolved_owner_id is None:
+            resolved_owner_id = oid
+        samples.extend(s)
+        chats_scanned += scanned
+        salvaged = salvaged or sal
+        files_read += 1
+        logger.info("%s → %d samples (owner %s%s)", p, len(s), oid,
+                    ", salvaged" if sal else "")
+
+    # Cap: stride evenly across the whole merged set rather than taking the tail,
+    # so every chat and time period stays represented (a plain tail-slice would,
+    # when several files are merged, keep only the last file's messages).
     capped = False
     if max_samples and len(samples) > max_samples:
-        samples = samples[-max_samples:]
+        step = len(samples) / max_samples
+        samples = [samples[int(i * step)] for i in range(max_samples)]
         capped = True
 
     num_examples = settings.style_num_examples
@@ -323,6 +346,7 @@ async def run_ingest(path: str, owner_id: Optional[int] = None,
 
     summary = {
         "owner_id": resolved_owner_id,
+        "files_read": files_read,
         "chats_scanned": chats_scanned,
         "samples_kept": len(samples),
         "examples_selected": examples_selected,
@@ -337,6 +361,7 @@ def _format_summary(s: dict) -> str:
     return (
         "Style learning complete.\n"
         f"  Mode:               {'salvage (truncated JSON)' if s['salvaged'] else 'clean'}\n"
+        f"  Files read:         {s.get('files_read', 1)}\n"
         f"  Owner id:           {s['owner_id']}\n"
         f"  1:1 chats scanned:  {s['chats_scanned']}\n"
         f"  Samples kept:       {s['samples_kept']}"
@@ -352,7 +377,8 @@ def main() -> None:
         format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
     )
     ap = argparse.ArgumentParser(description="Ingest a Telegram export and learn the owner's style.")
-    ap.add_argument("path", help="Path to result.json from a Telegram Desktop export")
+    ap.add_argument("path", nargs="+",
+                    help="One or more result.json exports (samples are merged)")
     ap.add_argument("--owner-id", type=int, default=None,
                     help="Your Telegram user id (required for single-chat exports)")
     ap.add_argument("--owner-name", default=None,
