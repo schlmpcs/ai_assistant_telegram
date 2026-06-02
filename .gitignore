@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Secrets & local state
+.env
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Telegram exports (may contain private data — never commit)
+result.json
+*export*.json
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+results.json
